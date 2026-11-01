@@ -6,7 +6,7 @@ import com.example.clickreadrep.commons.OrderRepairEvent
 import com.example.clickreadrep.commons.OrderRepairStep
 import com.example.clickreadrep.commons.OrderStatus
 import com.example.clickreadrep.commons.OrderStatusUpdatedEvent
-import com.example.clickreadrep.commons.OrderTotalAmountUpdateEvent
+import com.example.clickreadrep.commons.OrderTotalAmountRepairEvent
 import com.example.clickreadrep.config.KafkaConfig
 import com.example.clickreadrep.history.application.queries.GetOrderHistoryQuery
 import com.example.clickreadrep.history.domain.OrderHistory
@@ -24,6 +24,7 @@ import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.kafka.common.serialization.StringSerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.await
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Value
@@ -55,6 +56,7 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
         OrderStatusUpdatedEvent(orderId.toString(), customerId, BigDecimal("99.00"), OrderStatus.PROCESSING, createdAt, processingAt)
 
     @Test
+    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
     fun `should store an ORDER_CREATED event as the first version of the order`() {
         publish(created)
 
@@ -72,6 +74,7 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
     }
 
     @Test
+    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
     fun `should append an ORDER_STATUS_UPDATED event as a new version and keep the earlier state`() {
         publish(created)
         publish(processing)
@@ -89,12 +92,13 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
     }
 
     @Test
-    fun `should patch an ORDER_TOTAL_AMOUNT_UPDATED event into every version without a new one`() {
+    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
+    fun `should patch an ORDER_TOTAL_AMOUNT_REPAIR event into every version without a new one`() {
         publish(created)
         publish(processing)
         val processingVersion = awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.PROCESSING) }.version
 
-        publish(OrderTotalAmountUpdateEvent(orderId.toString(), customerId, BigDecimal("9.90"), createdAt))
+        publish(OrderTotalAmountRepairEvent(orderId.toString(), customerId, BigDecimal("9.90"), createdAt))
 
         val latest = awaitLatestState { assertThat(it.totalAmount).isEqualByComparingTo("9.90") }
         assertThat(latest.orderStatus).isEqualTo(OrderStatus.PROCESSING)
@@ -108,6 +112,7 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
     }
 
     @Test
+    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
     fun `should replace every version with the ORDER_REPAIR timeline and delete the older ones`() {
         publish(created)
         publish(processing)
@@ -128,7 +133,7 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
             )
         publish(repair)
 
-        val repaired = awaitRepair(previousVersion = processingVersion)
+        val repaired = awaitRepair(previousVersion = processingVersion!!)
         assertThat(repaired.orderStatus).isEqualTo(OrderStatus.PROCESSING)
         assertThat(repaired.totalAmount).isEqualByComparingTo("9.90")
         assertThat(repaired.updatedAt).isEqualTo(processingAt)
@@ -139,7 +144,7 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
 
         // A second repair replaces the first one and leaves the same timeline
         publish(repair)
-        val repairedAgain = awaitRepair(previousVersion = repaired.version)
+        val repairedAgain = awaitRepair(previousVersion = repaired.version!!)
         assertThat(repairedAgain.orderStatus).isEqualTo(OrderStatus.PROCESSING)
         assertThat(findSnapshot(beforeProcessing).orderStatus).isEqualTo(OrderStatus.CREATED)
 

@@ -3,7 +3,7 @@
 ## Purpose
 
 This runbook walks through the five order history scenarios of
-[ADR 0003](../adr/0003-clickhouse-for-order-history.md) on a local stack. Each scenario lists the commands to run and
+[ADR 0003](../adr/0003-postgres-primary-for-order-history.md) on a local stack. Each scenario lists the commands to run and
 the result to expect. The design note [ClickHouse Order History: Scenarios Explained](../design/clickhouse-order-history-scenarios.md)
 explains why the results look the way they do.
 
@@ -91,7 +91,7 @@ explains why the results look the way they do.
    * Check the `order_status_changes` table. You should see two rows, `CREATED` and `PROCESSING`; the amount
      correction adds no status change.
    * Check the `outbox` table. You should see an `ORDER_CREATED`, an `ORDER_STATUS_UPDATED` and an
-     `ORDER_TOTAL_AMOUNT_UPDATED` row; the last payload holds the new amount `9.90`.
+     `ORDER_TOTAL_AMOUNT_REPAIR` row; the last payload holds the new amount `9.90`.
    * Check Kafka UI. You should see three messages with key `customer-erin` in the same partition, the amount correction
      with the highest offset.
    * Check the `order_history` table. You should still see two rows, `CREATED` and `PROCESSING`, both with

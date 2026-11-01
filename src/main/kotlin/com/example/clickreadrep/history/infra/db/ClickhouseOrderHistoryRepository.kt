@@ -1,135 +1,23 @@
 package com.example.clickreadrep.history.infra.db
 
 import com.example.clickreadrep.commons.OrderStatus
-import com.example.clickreadrep.commons.monthPartitionRange
 import com.example.clickreadrep.commons.toUtcInstant
 import com.example.clickreadrep.history.application.queries.GetOrderHistoryQuery
 import com.example.clickreadrep.history.domain.OrderHistory
-import com.example.clickreadrep.history.domain.OrderHistoryRepository
+import com.example.clickreadrep.history.domain.OrderHistoryReadRepository
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Repository
-import java.math.BigDecimal
-import java.sql.PreparedStatement
 import java.sql.ResultSet
-import java.time.Instant
 import java.time.LocalDateTime
-import java.util.UUID
 import javax.sql.DataSource
 
+// Read replica of the order history; it is filled by the CDC sync from PostgreSQL, never by the application
 @Repository
 open class ClickhouseOrderHistoryRepository(
     @Qualifier("clickhouseDataSource") private val datasource: DataSource,
-) : OrderHistoryRepository {
+) : OrderHistoryReadRepository {
     protected val log = KotlinLogging.logger {}
-
-    override fun save(history: OrderHistory): OrderHistory {
-        datasource.connection.use { connection ->
-            connection.prepareStatement(INSERT_SQL).use { stmt ->
-                stmt.setOrderHistory(history)
-                stmt.executeUpdate()
-            }
-        }
-        log.info {
-            "Successfully appended domain record to ClickHouse for Order ID: ${history.orderId} with version offset: ${history.version}"
-        }
-        return history
-    }
-
-    override fun saveAll(histories: List<OrderHistory>) {
-        datasource.connection.use { connection ->
-            connection.prepareStatement(INSERT_SQL).use { stmt ->
-                histories.forEach { history ->
-                    stmt.setOrderHistory(history)
-                    stmt.addBatch()
-                }
-                // The driver sends the whole batch as one INSERT, which ClickHouse writes as a single block
-                stmt.executeBatch()
-            }
-        }
-        log.info { "Successfully appended ${histories.size} domain records to ClickHouse in one batch" }
-    }
-
-    /**
-     * Removes every version of an order older than [version] (lightweight delete), after a history repair.
-     *
-     * **Why the delete runs after the repair insert:** the repaired rows already win every `argMax` because of
-     * their higher version, so readers never see the order without rows. Redelivering the repair is idempotent:
-     * the inserted rows deduplicate (same sorting key and version) and the second delete matches nothing.
-     *
-     * **Why there is no `customer_id` or partition filter:** the delete must also remove orphan rows, i.e. rows
-     * without a repaired counterpart, which may hold a wrong `customer_id` or a wrong `created_at` and therefore
-     * live in another partition. The lightweight delete only marks the matching rows as deleted; background merges
-     * remove them physically.
-     */
-    override fun deleteVersionsBefore(
-        orderId: UUID,
-        version: Long,
-    ) {
-        val sql = "DELETE FROM order_history WHERE order_id = ? AND version < ?"
-
-        datasource.connection.use { connection ->
-            connection.prepareStatement(sql).use { stmt ->
-                stmt.setObject(1, orderId)
-                stmt.setLong(2, version)
-                stmt.executeUpdate()
-            }
-        }
-        log.info { "Successfully deleted versions older than $version in ClickHouse for Order ID: $orderId" }
-    }
-
-    private fun PreparedStatement.setOrderHistory(history: OrderHistory) {
-        setObject(1, history.orderId)
-        setString(2, history.customerId)
-        setBigDecimal(3, history.totalAmount)
-        setString(4, history.orderStatus.name)
-        // Instants are bound directly: the driver converts a LocalDateTime from the JVM time zone
-        setObject(5, history.createdAt)
-        setObject(6, history.updatedAt)
-        setLong(7, history.version)
-    }
-
-    /**
-     * Retroactively corrects the total amount of an order in **all** its versions (lightweight update).
-     *
-     * **Why an update instead of an append:** every event carries the full order state, so a wrong amount is copied
-     * into every version. An appended row would only replace one version in `argMax`, so earlier snapshots would keep
-     * the wrong value. The lightweight `UPDATE` writes a small patch part that every read applies, so all snapshots
-     * return the corrected amount while `status`, `updated_at` and `version` stay untouched.
-     *
-     * **How the patch is restricted to one partition:** all versions of an order share the same `created_at`, so the
-     * table partition `toYYYYMM(created_at)` is computed from [createdAt]. The `created_at` range from the start of
-     * that month (UTC) to the start of the next month lets ClickHouse skip every other partition, while
-     * `customer_id` and `order_id` match the prefix of the sorting key.
-     */
-    override fun updateTotalAmount(
-        orderId: UUID,
-        customerId: String,
-        createdAt: Instant,
-        newTotalAmount: BigDecimal,
-    ) {
-        val sql =
-            """
-            UPDATE order_history
-            SET total_amount = ?
-            WHERE customer_id = ? AND order_id = ?
-              AND created_at >= ? AND created_at < ?
-            """.trimIndent()
-
-        val (partitionStart, partitionEnd) = monthPartitionRange(createdAt)
-
-        datasource.connection.use { connection ->
-            connection.prepareStatement(sql).use { stmt ->
-                stmt.setBigDecimal(1, newTotalAmount)
-                stmt.setString(2, customerId)
-                stmt.setObject(3, orderId)
-                stmt.setObject(4, partitionStart)
-                stmt.setObject(5, partitionEnd)
-                stmt.executeUpdate()
-            }
-        }
-        log.info { "Successfully patched total amount in ClickHouse for Order ID: $orderId to $newTotalAmount" }
-    }
 
     /**
      * Reconstructs the state of every order exactly as it was at [targetTime] (time travel).
@@ -202,12 +90,4 @@ open class ClickhouseOrderHistoryRepository(
             updatedAt = getObject("latest_updated_at", LocalDateTime::class.java).toUtcInstant(),
             version = getLong("latest_version"),
         )
-
-    private companion object {
-        val INSERT_SQL =
-            """
-            INSERT INTO order_history (order_id, customer_id, total_amount, status, created_at, updated_at, version)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent()
-    }
 }

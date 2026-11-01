@@ -3,7 +3,7 @@ package com.example.clickreadrep.commons
 import com.example.clickreadrep.commons.OrderEventType.ORDER_CREATED
 import com.example.clickreadrep.commons.OrderEventType.ORDER_REPAIR
 import com.example.clickreadrep.commons.OrderEventType.ORDER_STATUS_UPDATED
-import com.example.clickreadrep.commons.OrderEventType.ORDER_TOTAL_AMOUNT_UPDATED
+import com.example.clickreadrep.commons.OrderEventType.ORDER_TOTAL_AMOUNT_REPAIR
 import com.example.clickreadrep.config.KafkaConfig
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -21,8 +21,8 @@ class OrderEventsTest {
                 OrderCreatedEvent("order-1", "customer-1", BigDecimal("49.90"), OrderStatus.CREATED, createdAt, createdAt),
             ORDER_STATUS_UPDATED to
                 OrderStatusUpdatedEvent("order-1", "customer-1", BigDecimal("49.90"), OrderStatus.PROCESSING, createdAt, updatedAt),
-            ORDER_TOTAL_AMOUNT_UPDATED to
-                OrderTotalAmountUpdateEvent("order-1", "customer-1", BigDecimal("9.90"), createdAt),
+            ORDER_TOTAL_AMOUNT_REPAIR to
+                OrderTotalAmountRepairEvent("order-1", "customer-1", BigDecimal("9.90"), createdAt),
             ORDER_REPAIR to
                 OrderRepairEvent(
                     "order-1",

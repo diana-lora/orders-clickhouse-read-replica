@@ -90,7 +90,7 @@ The application publishes four event types:
 |------------------------------|------------------------------------|-------------------------------------------------------------|
 | `ORDER_CREATED`              | `POST /orders`                     | Appends the first version of the order                      |
 | `ORDER_STATUS_UPDATED`       | `PUT /orders/{id}/status`          | Appends a new version with the new status                   |
-| `ORDER_TOTAL_AMOUNT_UPDATED` | `PUT /orders/{id}/total-amount`    | Corrects the amount in every version (lightweight `UPDATE`) |
+| `ORDER_TOTAL_AMOUNT_REPAIR`  | `PUT /orders/{id}/total-amount`    | Repairs the amount in every stored state of the order       |
 | `ORDER_REPAIR`               | `POST /orders/{id}/history-repair` | Rebuilds every version from the PostgreSQL status timeline  |
 
 ---
@@ -162,7 +162,7 @@ The `app` service belongs to the `app` Compose profile. Run `docker compose up -
 * **Architecture Decision Records**
   * [ADR 0001: Outbox and CQRS](docs/adr/0001-architecture-decisions-for-outbox-and-cqrs.md)
   * [ADR 0002: Kafka Consumer Dead Letter Queue](docs/adr/0002-resilience-kafka-consumer-dlq.md)
-  * [ADR 0003: ClickHouse for the Order History](docs/adr/0003-clickhouse-for-order-history.md)
+  * [ADR 0003: PostgreSQL as Primary Store for the Order History](docs/adr/0003-postgres-primary-for-order-history.md)
 * **Design Notes**
   * [ClickHouse Order History: Scenarios Explained](docs/design/clickhouse-order-history-scenarios.md)
 * **Runbooks**

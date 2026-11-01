@@ -1,7 +1,7 @@
 # ClickHouse Order History: Scenarios Explained
 
 This design note explains the decisions of
-[ADR 0003: ClickHouse Mutation & Optimization Strategies for Order History](../adr/0003-clickhouse-for-order-history.md)
+[ADR 0003: PostgreSQL as Primary Store for the Order History](../adr/0003-postgres-primary-for-order-history.md)
 with worked examples. It shows, per scenario, which rows are stored and how each time travel snapshot resolves them.
 The ADR records the decisions, their alternatives and their consequences; this note shows how they behave.
 
@@ -153,7 +153,7 @@ WHERE customer_id = ? AND order_id = ?
 
 `status`, `updated_at` and `version` stay untouched, so the status timeline from Scenario 2 is preserved. The
 trade-off is that ClickHouse no longer keeps the original wrong value, and corrections must stay low-frequency (see the
-[Negative Impact](../adr/0003-clickhouse-for-order-history.md#negative-impact) of the ADR).
+[Negative Impact](../adr/0003-postgres-primary-for-order-history.md#negative-impact) of the ADR).
 
 ## Scenario 4: Historical Point-in-Time Reconstruction (Time Travel)
 

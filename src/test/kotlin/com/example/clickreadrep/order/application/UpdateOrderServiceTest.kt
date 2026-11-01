@@ -2,10 +2,10 @@ package com.example.clickreadrep.order.application
 
 import com.example.clickreadrep.commons.OrderEvent
 import com.example.clickreadrep.commons.OrderEventType.ORDER_STATUS_UPDATED
-import com.example.clickreadrep.commons.OrderEventType.ORDER_TOTAL_AMOUNT_UPDATED
+import com.example.clickreadrep.commons.OrderEventType.ORDER_TOTAL_AMOUNT_REPAIR
 import com.example.clickreadrep.commons.OrderStatus
 import com.example.clickreadrep.commons.OrderStatusUpdatedEvent
-import com.example.clickreadrep.commons.OrderTotalAmountUpdateEvent
+import com.example.clickreadrep.commons.OrderTotalAmountRepairEvent
 import com.example.clickreadrep.config.KafkaConfig
 import com.example.clickreadrep.order.application.commands.UpdateOrderStatusCommand
 import com.example.clickreadrep.order.application.commands.UpdateOrderTotalAmountCommand
@@ -79,7 +79,7 @@ class UpdateOrderServiceTest {
     }
 
     @Test
-    fun `should update the total amount and save an ORDER_TOTAL_AMOUNT_UPDATED outbox event`() {
+    fun `should update the total amount and save an ORDER_TOTAL_AMOUNT_REPAIR outbox event`() {
         givenExistingOrder()
 
         val updated = service.execute(UpdateOrderTotalAmountCommand(order.id, BigDecimal("9.90")))
@@ -88,10 +88,10 @@ class UpdateOrderServiceTest {
         assertThat(updated.status).isEqualTo(OrderStatus.CREATED)
         // A correction changes no state on the timeline
         verify(exactly = 0) { orderStatusChangeRepository.save(any()) }
-        assertThat(outboxEvent.captured.eventType).isEqualTo(ORDER_TOTAL_AMOUNT_UPDATED)
+        assertThat(outboxEvent.captured.eventType).isEqualTo(ORDER_TOTAL_AMOUNT_REPAIR)
         assertThat(objectMapper.readValue(outboxEvent.captured.payload, OrderEvent::class.java))
             .isEqualTo(
-                OrderTotalAmountUpdateEvent(
+                OrderTotalAmountRepairEvent(
                     orderId = order.id.toString(),
                     customerId = "customer-1",
                     newTotalAmount = BigDecimal("9.90"),

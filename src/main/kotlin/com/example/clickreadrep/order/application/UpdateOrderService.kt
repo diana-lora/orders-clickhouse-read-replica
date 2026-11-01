@@ -1,7 +1,7 @@
 package com.example.clickreadrep.order.application
 
 import com.example.clickreadrep.commons.OrderStatusUpdatedEvent
-import com.example.clickreadrep.commons.OrderTotalAmountUpdateEvent
+import com.example.clickreadrep.commons.OrderTotalAmountRepairEvent
 import com.example.clickreadrep.commons.nowInMillis
 import com.example.clickreadrep.order.application.commands.UpdateOrderStatusCommand
 import com.example.clickreadrep.order.application.commands.UpdateOrderTotalAmountCommand
@@ -55,7 +55,7 @@ class UpdateOrderService(
         val savedOrder = orderRepository.save(order)
 
         val updatedEvent =
-            OrderTotalAmountUpdateEvent(
+            OrderTotalAmountRepairEvent(
                 orderId = savedOrder.id.toString(),
                 customerId = savedOrder.customerId,
                 newTotalAmount = savedOrder.totalAmount,

@@ -12,6 +12,7 @@ import com.example.clickreadrep.utils.IntegrationTestContainers
 import com.fasterxml.jackson.module.kotlin.readValue
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.await
+import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.MediaType
@@ -23,6 +24,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
+@Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
 class OrderHistoryTimeTravelIT : IntegrationTestContainers() {
     @Autowired
     private lateinit var historyRepository: ClickhouseOrderHistoryTestRepository

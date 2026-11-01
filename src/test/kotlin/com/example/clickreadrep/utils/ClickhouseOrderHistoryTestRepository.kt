@@ -12,6 +12,29 @@ import javax.sql.DataSource
 class ClickhouseOrderHistoryTestRepository(
     @Qualifier("clickhouseDataSource") private val datasource: DataSource,
 ) : ClickhouseOrderHistoryRepository(datasource) {
+    // Seeds ClickHouse directly: the application itself only reads from it
+    fun save(history: OrderHistory): OrderHistory {
+        val sql =
+            """
+            INSERT INTO order_history (order_id, customer_id, total_amount, status, created_at, updated_at, version)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+        datasource.connection.use { connection ->
+            connection.prepareStatement(sql).use { stmt ->
+                stmt.setObject(1, history.orderId)
+                stmt.setString(2, history.customerId)
+                stmt.setBigDecimal(3, history.totalAmount)
+                stmt.setString(4, history.orderStatus.name)
+                // Instants are bound directly: the driver converts a LocalDateTime from the JVM time zone
+                stmt.setObject(5, history.createdAt)
+                stmt.setObject(6, history.updatedAt)
+                stmt.setLong(7, history.version ?: 0)
+                stmt.executeUpdate()
+            }
+        }
+        return history
+    }
+
     fun findAll(): List<OrderHistory> = findLatestStates(whereClause = "")
 
     // Returns the latest state of the order (one consolidated row), not every stored version

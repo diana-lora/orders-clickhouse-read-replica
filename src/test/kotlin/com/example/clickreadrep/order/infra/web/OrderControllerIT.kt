@@ -5,12 +5,12 @@ import com.example.clickreadrep.commons.OrderEvent
 import com.example.clickreadrep.commons.OrderEventType.ORDER_CREATED
 import com.example.clickreadrep.commons.OrderEventType.ORDER_REPAIR
 import com.example.clickreadrep.commons.OrderEventType.ORDER_STATUS_UPDATED
-import com.example.clickreadrep.commons.OrderEventType.ORDER_TOTAL_AMOUNT_UPDATED
+import com.example.clickreadrep.commons.OrderEventType.ORDER_TOTAL_AMOUNT_REPAIR
 import com.example.clickreadrep.commons.OrderRepairEvent
 import com.example.clickreadrep.commons.OrderRepairStep
 import com.example.clickreadrep.commons.OrderStatus
 import com.example.clickreadrep.commons.OrderStatusUpdatedEvent
-import com.example.clickreadrep.commons.OrderTotalAmountUpdateEvent
+import com.example.clickreadrep.commons.OrderTotalAmountRepairEvent
 import com.example.clickreadrep.config.KafkaConfig.Companion.ORDER_EVENTS_TOPIC
 import com.example.clickreadrep.order.domain.Order
 import com.example.clickreadrep.order.domain.outbox.OutboxEvent
@@ -89,7 +89,7 @@ class OrderControllerIT : IntegrationTestContainers() {
     }
 
     @Test
-    fun `should correct the total amount and add an ORDER_TOTAL_AMOUNT_UPDATED outbox event`() {
+    fun `should correct the total amount and add an ORDER_TOTAL_AMOUNT_REPAIR outbox event`() {
         val orderId = createOrder(BigDecimal("99.00")).id
 
         updateOrderTotalAmount(orderId, BigDecimal("9.90"))
@@ -99,8 +99,8 @@ class OrderControllerIT : IntegrationTestContainers() {
         assertThat(order.status).isEqualTo(OrderStatus.CREATED)
 
         val outboxEvents = findOutboxEvents(orderId)
-        assertThat(outboxEvents.map { it.eventType }).containsExactlyInAnyOrder(ORDER_CREATED, ORDER_TOTAL_AMOUNT_UPDATED)
-        val event = readEvent<OrderTotalAmountUpdateEvent>(outboxEvents.single { it.eventType == ORDER_TOTAL_AMOUNT_UPDATED })
+        assertThat(outboxEvents.map { it.eventType }).containsExactlyInAnyOrder(ORDER_CREATED, ORDER_TOTAL_AMOUNT_REPAIR)
+        val event = readEvent<OrderTotalAmountRepairEvent>(outboxEvents.single { it.eventType == ORDER_TOTAL_AMOUNT_REPAIR })
         assertThat(event.customerId).isEqualTo(customerId)
         assertThat(event.newTotalAmount).isEqualByComparingTo("9.90")
         assertThat(event.createdAt).isEqualTo(order.createdAt)
