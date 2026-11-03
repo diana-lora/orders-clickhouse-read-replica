@@ -1,1 +1,1 @@
-rootProject.name = "distributed-systems-fundamentals"
+rootProject.name = "orders-clickhouse-read-replica"

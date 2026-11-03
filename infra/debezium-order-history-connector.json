@@ -1,0 +1,30 @@
+{
+  "name": "postgres-order-history-connector",
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "tasks.max": "1",
+
+  "database.hostname": "postgres",
+  "database.port": "5432",
+  "database.user": "order_user",
+  "database.password": "order_password",
+  "database.dbname": "order_db",
+  "plugin.name": "pgoutput",
+
+  "slot.name": "order_history_slot",
+  "publication.name": "order_history_publication",
+  "publication.autocreate.mode": "filtered",
+  "table.include.list": "public.order_history",
+  "topic.prefix": "order_history_cdc",
+  "snapshot.mode": "initial",
+  "decimal.handling.mode": "string",
+
+  "transforms": "unwrap",
+  "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+  "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
+  "transforms.unwrap.add.fields": "lsn",
+
+  "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "key.converter.schemas.enable": "false",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false"
+}
