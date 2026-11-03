@@ -21,8 +21,8 @@ docker compose --profile app up --build -d
 ```
 
 The `app` service belongs to the `app` profile, so it only starts when the profile is active. The
-[order history scenarios runbook](../docs/runbook/clickhouse-order-history-scenarios.md) explains how to create orders
-and walk through the order history scenarios. Run `docker compose --profile app down -v` to start again from a clean
+[order history CDC sync runbook](../docs/runbook/order-history-cdc-sync.md) explains how to create orders
+and follow them from PostgreSQL into ClickHouse. Run `docker compose --profile app down -v` to start again from a clean
 database.
 
 ### 3. Service Access Ports
