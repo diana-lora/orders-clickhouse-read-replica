@@ -5,19 +5,25 @@ import com.example.clickreadrep.history.domain.OrderHistory
 import com.example.clickreadrep.history.infra.web.dtos.OrderHistoryResponse
 import com.example.clickreadrep.utils.ClickhouseOrderHistoryTestRepository
 import com.example.clickreadrep.utils.IntegrationTestContainers
+import com.example.clickreadrep.utils.PostgresOrderHistoryTestRepository
 import com.fasterxml.jackson.module.kotlin.readValue
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.kotlin.await
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.test.web.servlet.get
 import java.math.BigDecimal
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
 class OrderHistoryControllerIT : IntegrationTestContainers() {
     @Autowired
-    private lateinit var historyRepository: ClickhouseOrderHistoryTestRepository
+    private lateinit var postgresHistoryRepository: PostgresOrderHistoryTestRepository
+
+    @Autowired
+    private lateinit var clickhouseHistoryRepository: ClickhouseOrderHistoryTestRepository
 
     private val customerA = "customer-a-${UUID.randomUUID()}"
     private val customerB = "customer-b-${UUID.randomUUID()}"
@@ -30,6 +36,10 @@ class OrderHistoryControllerIT : IntegrationTestContainers() {
         seed(orderA1, customerA)
         seed(orderA2, customerA)
         seed(orderB1, customerB)
+        // The rows reach ClickHouse asynchronously through the CDC sync
+        await.atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(250)).untilAsserted {
+            listOf(orderA1, orderA2, orderB1).forEach { assertThat(clickhouseHistoryRepository.findByOrderId(it)).hasSize(1) }
+        }
     }
 
     @Test
@@ -67,8 +77,9 @@ class OrderHistoryControllerIT : IntegrationTestContainers() {
         customerId: String,
     ) {
         val createdAt = Instant.parse("2026-02-01T10:00:00Z")
-        historyRepository.save(
-            OrderHistory(orderId, customerId, BigDecimal("20.00"), OrderStatus.CREATED, createdAt, createdAt, version = 1),
+        // Written to PostgreSQL, the primary store; ClickHouse is only fed by the CDC sync
+        postgresHistoryRepository.save(
+            OrderHistory(orderId, customerId, BigDecimal("20.00"), OrderStatus.CREATED, createdAt, createdAt),
         )
     }
 

@@ -11,3 +11,6 @@ CREATE TABLE order_history
     version      BIGINT                   NOT NULL,
     CONSTRAINT uq_order_history_order_updated UNIQUE (order_id, updated_at)
 );
+
+-- CDC to ClickHouse: update and delete events carry the whole row, so a deleted state can be marked in the replica
+ALTER TABLE order_history REPLICA IDENTITY FULL;

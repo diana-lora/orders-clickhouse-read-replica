@@ -9,10 +9,10 @@ import com.example.clickreadrep.order.infra.web.dtos.UpdateOrderStatusRequest
 import com.example.clickreadrep.order.infra.web.dtos.UpdateOrderTotalAmountRequest
 import com.example.clickreadrep.utils.ClickhouseOrderHistoryTestRepository
 import com.example.clickreadrep.utils.IntegrationTestContainers
+import com.example.clickreadrep.utils.PostgresOrderHistoryTestRepository
 import com.fasterxml.jackson.module.kotlin.readValue
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.await
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.MediaType
@@ -24,10 +24,12 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
-@Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
 class OrderHistoryTimeTravelIT : IntegrationTestContainers() {
     @Autowired
     private lateinit var historyRepository: ClickhouseOrderHistoryTestRepository
+
+    @Autowired
+    private lateinit var postgresHistoryRepository: PostgresOrderHistoryTestRepository
 
     @Test
     fun `order status update returns the status valid at each point in time`() {
@@ -59,7 +61,7 @@ class OrderHistoryTimeTravelIT : IntegrationTestContainers() {
         updateStatus(orderId, OrderStatus.PROCESSING)
         val processingTime = awaitLatestState(orderId) { assertThat(it.status).isEqualTo(OrderStatus.PROCESSING) }.updatedAt
 
-        // The typo was copied into every version of the order
+        // The typo was copied into every state of the order
         assertThat(getSnapshot(orderId, createdTime).totalAmount).isEqualByComparingTo(wrongAmount)
         assertThat(getSnapshot(orderId, processingTime).totalAmount).isEqualByComparingTo(wrongAmount)
 
@@ -78,7 +80,7 @@ class OrderHistoryTimeTravelIT : IntegrationTestContainers() {
     }
 
     @Test
-    fun `history rebuild with backdated versions repairs the corrupted state from the moment it happened`() {
+    fun `history rebuild replaces the corrupted timeline and the deletes reach ClickHouse`() {
         val customerId = "customer-rebuild-${UUID.randomUUID()}"
         val orderId = createOrder(customerId, BigDecimal("49.90"))
         val createdTime = awaitLatestState(orderId) { assertThat(it.status).isEqualTo(OrderStatus.CREATED) }.updatedAt
@@ -86,34 +88,28 @@ class OrderHistoryTimeTravelIT : IntegrationTestContainers() {
         Thread.sleep(50)
         updateStatus(orderId, OrderStatus.PROCESSING)
         val processingTime = awaitLatestState(orderId) { assertThat(it.status).isEqualTo(OrderStatus.PROCESSING) }.updatedAt
-        val processingVersion = historyRepository.findByOrderId(orderId).single().version
 
-        // Drift: a COMPLETED state that never happened in PostgreSQL, stored directly in ClickHouse
+        // Drift: a COMPLETED state that never happened in the order domain, written into the history store
         val corruptedTime = processingTime.plusSeconds(1)
-        historyRepository.save(
-            OrderHistory(orderId, customerId, BigDecimal("49.90"), OrderStatus.COMPLETED, createdTime, corruptedTime, processingVersion),
+        postgresHistoryRepository.save(
+            OrderHistory(orderId, customerId, BigDecimal("49.90"), OrderStatus.COMPLETED, createdTime, corruptedTime),
         )
-        assertThat(getSnapshot(orderId, corruptedTime).status).isEqualTo(OrderStatus.COMPLETED)
+        await.atMost(SYNC_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted {
+            assertThat(getSnapshot(orderId, corruptedTime).status).isEqualTo(OrderStatus.COMPLETED)
+        }
 
         repairHistory(orderId)
-        await.atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(250)).untilAsserted {
-            // Only the repaired CREATED and PROCESSING rows remain, the orphan COMPLETED row is deleted
+        await.atMost(SYNC_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted {
+            // The repair deleted all three rows in PostgreSQL and inserted the two real states; FINAL hides the deletes
             assertThat(historyRepository.countRows(orderId)).isEqualTo(2)
-            assertThat(historyRepository.findByOrderId(orderId).single().version).isGreaterThan(processingVersion)
+            assertThat(getSnapshot(orderId, corruptedTime).status).isEqualTo(OrderStatus.PROCESSING)
         }
 
         assertThat(getOrderHistory(orderId, createdTime.minusMillis(1))).isEmpty()
         assertThat(getSnapshot(orderId, createdTime).status).isEqualTo(OrderStatus.CREATED)
-        assertThat(getSnapshot(orderId, processingTime).status).isEqualTo(OrderStatus.PROCESSING)
-        // The snapshot between the corruption and the repair already returns the repaired state
-        val repairedSnapshot = getSnapshot(orderId, corruptedTime)
+        val repairedSnapshot = getSnapshot(orderId, processingTime)
         assertThat(repairedSnapshot.status).isEqualTo(OrderStatus.PROCESSING)
         assertThat(repairedSnapshot.updatedAt).isEqualTo(processingTime)
-
-        // Background merges keep both repaired states
-        historyRepository.optimizeFinal()
-        assertThat(historyRepository.countRows(orderId)).isEqualTo(2)
-        assertThat(getSnapshot(orderId, createdTime).status).isEqualTo(OrderStatus.CREATED)
     }
 
     private fun createOrder(
@@ -180,18 +176,23 @@ class OrderHistoryTimeTravelIT : IntegrationTestContainers() {
         targetTime: Instant,
     ): OrderHistoryResponse = getOrderHistory(orderId, targetTime).single()
 
-    // The history is written asynchronously, so the latest state is polled until it matches
+    // The history reaches ClickHouse asynchronously (Kafka consumer, then CDC), so the latest state is polled until it matches
     private fun awaitLatestState(
         orderId: UUID,
         assertion: (OrderHistoryResponse) -> Unit,
     ): OrderHistoryResponse {
         lateinit var latest: OrderHistoryResponse
-        await.atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(250)).untilAsserted {
+        await.atMost(SYNC_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted {
             val snapshots = getOrderHistory(orderId)
             assertThat(snapshots).hasSize(1)
             latest = snapshots.first()
             assertion(latest)
         }
         return latest
+    }
+
+    private companion object {
+        val SYNC_TIMEOUT: Duration = Duration.ofSeconds(30)
+        val POLL_INTERVAL: Duration = Duration.ofMillis(250)
     }
 }

@@ -44,9 +44,9 @@ abstract class IntegrationTestContainers {
             PostgreSQLContainer("postgres:16-alpine")
                 .withNetwork(network)
                 .withNetworkAliases("postgres")
-                .withDatabaseName("outbox_db")
-                .withUsername("outbox_user")
-                .withPassword("outbox_password")
+                .withDatabaseName("order_db")
+                .withUsername("order_user")
+                .withPassword("order_password")
                 .withCommand("postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=4", "-c", "max_wal_senders=4")
 
         val clickhouse: ClickHouseContainer =
@@ -75,7 +75,8 @@ abstract class IntegrationTestContainers {
                 .waitingFor(Wait.forHttp("/connectors").forPort(CONNECT_PORT).forStatusCode(200))
                 .withStartupTimeout(Duration.ofMinutes(3))
 
-        private val connectorRegistered = AtomicBoolean(false)
+        private val connectorsRegistered = AtomicBoolean(false)
+        private val connectorFiles = listOf("infra/debezium-outbox-connector.json", "infra/debezium-order-history-connector.json")
         private val http: HttpClient = HttpClient.newHttpClient()
         private val mapper = ObjectMapper()
 
@@ -95,16 +96,18 @@ abstract class IntegrationTestContainers {
             registry.add("clickhouse.datasource.url") { clickhouse.jdbcUrl }
             registry.add("clickhouse.datasource.username") { clickhouse.username }
             registry.add("clickhouse.datasource.password") { clickhouse.password }
+            // ClickHouse consumes the CDC topic from inside the container network
+            registry.add("clickhouse.kafka.broker-list") { KAFKA_INTERNAL_LISTENER }
             registry.add("spring.kafka.bootstrap-servers") { kafka.bootstrapServers }
         }
 
         private fun connectUrl(path: String) = URI.create("http://${debezium.host}:${debezium.getMappedPort(CONNECT_PORT)}$path")
 
         @Suppress("UNCHECKED_CAST")
-        private fun registerOutboxConnector() {
+        private fun registerConnector(file: String) {
             val config =
                 mapper
-                    .readValue(File("infra/debezium-outbox-connector.json"), Map::class.java)
+                    .readValue(File(file), Map::class.java)
                     .toMutableMap() as MutableMap<String, Any>
             val name = config["name"] as String
             config["database.hostname"] = "postgres"
@@ -144,11 +147,11 @@ abstract class IntegrationTestContainers {
         }
     }
 
-    /** Runs after the Spring context has started (and Flyway created the outbox table). */
+    /** Runs after the Spring context has started (and Flyway created the outbox and order_history tables). */
     @BeforeEach
-    fun ensureOutboxConnector() {
-        if (connectorRegistered.compareAndSet(false, true)) {
-            registerOutboxConnector()
+    fun ensureConnectors() {
+        if (connectorsRegistered.compareAndSet(false, true)) {
+            connectorFiles.forEach(::registerConnector)
         }
     }
 }

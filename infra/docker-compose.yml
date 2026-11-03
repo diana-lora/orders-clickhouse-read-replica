@@ -5,9 +5,9 @@ services:
     image: postgres:16-alpine
     container_name: outbox-postgres
     environment:
-      POSTGRES_DB: outbox_db
-      POSTGRES_USER: outbox_user
-      POSTGRES_PASSWORD: outbox_password
+      POSTGRES_DB: order_db
+      POSTGRES_USER: order_user
+      POSTGRES_PASSWORD: order_password
     ports:
       - "5432:5432"
     # Enable logical replication for Debezium CDC
@@ -15,7 +15,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U outbox_user -d outbox_db" ]
+      test: [ "CMD-SHELL", "pg_isready -U order_user -d order_db" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -107,9 +107,9 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/outbox_db
-      SPRING_DATASOURCE_USERNAME: outbox_user
-      SPRING_DATASOURCE_PASSWORD: outbox_password
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/order_db
+      SPRING_DATASOURCE_USERNAME: order_user
+      SPRING_DATASOURCE_PASSWORD: order_password
       CLICKHOUSE_DATASOURCE_URL: jdbc:clickhouse://clickhouse:8123/orders_analytics
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
 
@@ -134,7 +134,8 @@ services:
   connector-init:
     image: curlimages/curl:latest
     volumes:
-      - ./debezium-outbox-connector.json:/tmp/config.json
+      - ./debezium-outbox-connector.json:/tmp/postgres-outbox-connector.json
+      - ./debezium-order-history-connector.json:/tmp/postgres-order-history-connector.json
     depends_on:
       debezium:
         condition: service_started
@@ -144,40 +145,40 @@ services:
         while ! curl -s http://debezium:8083/connectors/; do
           sleep 3
         done
-      
-        echo 'Registering or updating Debezium connector via PUT...'
-        # Use the mounted connector configuration file.
-        curl -s -X PUT -H 'Content-Type: application/json' -d @/tmp/config.json http://debezium:8083/connectors/postgres-outbox-connector/config
-      
-        echo 'Validating task runtime health status...'
-        AVAILABLE=false
-      
-        for i in 1 2 3 4 5 6 7 8 9 10; do
-          STATUS=\$(curl -s http://debezium:8083/connectors/postgres-outbox-connector/status)
-          echo 'Current state:' \$$STATUS
-      
-          if echo \"\$$STATUS\" | grep -q 'FAILED'; then
-            echo 'CRITICAL: Debezium connector task initialization failed!'
-            exit 1
-          fi
-      
-          if echo \"\$$STATUS\" | grep -q 'RUNNING'; then
-            if echo \"\$$STATUS\" | grep -q '\"tasks\":\\[\\]'; then
-              echo 'Waiting for tasks array list allocation...'
-            else
-              echo 'SUCCESS: Debezium outbox pipeline is active and RUNNING!'
-              AVAILABLE=true
-              break
-            fi
-          fi
-      
-          sleep 3
-        done
 
-        if [ \"\$$AVAILABLE\" = 'false' ]; then
-          echo 'TIMEOUT: Connector registered but tasks are taking too long to start.'
-          exit 1
-        fi
+        # Creates or updates the connector named \$$1 with an idempotent PUT and waits until its task is RUNNING
+        register() {
+          NAME=\$$1
+          echo \"Registering or updating Debezium connector \$$NAME via PUT...\"
+          curl -s -X PUT -H 'Content-Type: application/json' -d @/tmp/\$$NAME.json http://debezium:8083/connectors/\$$NAME/config
+
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            STATUS=\$$(curl -s http://debezium:8083/connectors/\$$NAME/status)
+            echo 'Current state:' \$$STATUS
+
+            if echo \"\$$STATUS\" | grep -q 'FAILED'; then
+              echo \"CRITICAL: Debezium connector \$$NAME task initialization failed!\"
+              return 1
+            fi
+
+            if echo \"\$$STATUS\" | grep -q 'RUNNING'; then
+              if echo \"\$$STATUS\" | grep -q '\"tasks\":\\[\\]'; then
+                echo 'Waiting for tasks array list allocation...'
+              else
+                echo \"SUCCESS: Debezium connector \$$NAME is active and RUNNING!\"
+                return 0
+              fi
+            fi
+
+            sleep 3
+          done
+
+          echo \"TIMEOUT: Connector \$$NAME registered but tasks are taking too long to start.\"
+          return 1
+        }
+
+        register postgres-outbox-connector || exit 1
+        register postgres-order-history-connector || exit 1
       "
 volumes:
   pgdata:

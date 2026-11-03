@@ -5,9 +5,9 @@
 
   "database.hostname": "postgres",
   "database.port": "5432",
-  "database.user": "outbox_user",
-  "database.password": "outbox_password",
-  "database.dbname": "outbox_db",
+  "database.user": "order_user",
+  "database.password": "order_password",
+  "database.dbname": "order_db",
   "plugin.name": "pgoutput",
 
   "table.include.list": "public.outbox",

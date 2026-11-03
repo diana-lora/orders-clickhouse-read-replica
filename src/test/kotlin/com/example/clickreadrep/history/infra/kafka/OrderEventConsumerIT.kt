@@ -12,6 +12,7 @@ import com.example.clickreadrep.history.application.queries.GetOrderHistoryQuery
 import com.example.clickreadrep.history.domain.OrderHistory
 import com.example.clickreadrep.utils.ClickhouseOrderHistoryTestRepository
 import com.example.clickreadrep.utils.IntegrationTestContainers
+import com.example.clickreadrep.utils.PostgresOrderHistoryTestRepository
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
@@ -24,7 +25,6 @@ import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.kafka.common.serialization.StringSerializer
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.await
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Value
@@ -34,8 +34,9 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * Kafka events in, ClickHouse rows out. Events are published as plain JSON strings without type headers, exactly as
- * Debezium routes them from the outbox. Fixed timestamps make the time travel assertions deterministic.
+ * Kafka events in, ClickHouse rows out: the consumer writes PostgreSQL and the CDC sync replicates every change into
+ * ClickHouse. Events are published as plain JSON strings without type headers, exactly as Debezium routes them from the
+ * outbox. Fixed timestamps make the time travel assertions deterministic.
  */
 class OrderEventConsumerIT : IntegrationTestContainers() {
     @Value($$"${spring.kafka.bootstrap-servers}")
@@ -43,6 +44,9 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
 
     @Autowired
     private lateinit var historyRepository: ClickhouseOrderHistoryTestRepository
+
+    @Autowired
+    private lateinit var postgresHistoryRepository: PostgresOrderHistoryTestRepository
 
     private val orderId = UUID.randomUUID()
     private val customerId = "customer-consumer-${UUID.randomUUID()}"
@@ -56,8 +60,7 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
         OrderStatusUpdatedEvent(orderId.toString(), customerId, BigDecimal("99.00"), OrderStatus.PROCESSING, createdAt, processingAt)
 
     @Test
-    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
-    fun `should store an ORDER_CREATED event as the first version of the order`() {
+    fun `should store an ORDER_CREATED event as the first state of the order`() {
         publish(created)
 
         val record = awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.CREATED) }
@@ -74,36 +77,30 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
     }
 
     @Test
-    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
-    fun `should append an ORDER_STATUS_UPDATED event as a new version and keep the earlier state`() {
+    fun `should append an ORDER_STATUS_UPDATED event as a new state and keep the earlier one`() {
         publish(created)
         publish(processing)
 
         val latest = awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.PROCESSING) }
         assertThat(latest.updatedAt).isEqualTo(processingAt)
-
-        val snapshotBeforeProcessing = findSnapshot(beforeProcessing)
-        assertThat(snapshotBeforeProcessing.orderStatus).isEqualTo(OrderStatus.CREATED)
-        assertThat(latest.version).isGreaterThan(snapshotBeforeProcessing.version)
-
-        // Background merges must not remove earlier states, otherwise time travel loses them
-        historyRepository.optimizeFinal()
+        assertThat(historyRepository.countRows(orderId)).isEqualTo(2)
         assertThat(findSnapshot(beforeProcessing).orderStatus).isEqualTo(OrderStatus.CREATED)
     }
 
     @Test
-    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
-    fun `should patch an ORDER_TOTAL_AMOUNT_REPAIR event into every version without a new one`() {
+    fun `should patch an ORDER_TOTAL_AMOUNT_REPAIR event into every state without a new one`() {
         publish(created)
         publish(processing)
-        val processingVersion = awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.PROCESSING) }.version
+        awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.PROCESSING) }
 
         publish(OrderTotalAmountRepairEvent(orderId.toString(), customerId, BigDecimal("9.90"), createdAt))
 
         val latest = awaitLatestState { assertThat(it.totalAmount).isEqualByComparingTo("9.90") }
         assertThat(latest.orderStatus).isEqualTo(OrderStatus.PROCESSING)
         assertThat(latest.updatedAt).isEqualTo(processingAt)
-        assertThat(latest.version).isEqualTo(processingVersion)
+        // The UPDATE increased the optimistic-locking version of the row
+        assertThat(latest.version).isEqualTo(1)
+        assertThat(historyRepository.countRows(orderId)).isEqualTo(2)
 
         val snapshotBeforeProcessing = findSnapshot(beforeProcessing)
         assertThat(snapshotBeforeProcessing.orderStatus).isEqualTo(OrderStatus.CREATED)
@@ -112,16 +109,16 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
     }
 
     @Test
-    @Disabled("ClickHouse is not fed until the Debezium sync of phase 2")
-    fun `should replace every version with the ORDER_REPAIR timeline and delete the older ones`() {
+    fun `should replace every state with the ORDER_REPAIR timeline and delete the older ones`() {
         publish(created)
         publish(processing)
-        val processingVersion = awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.PROCESSING) }.version
+        awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.PROCESSING) }
         // Orphan: a state that never happened, at a timestamp no repaired row shares
         val orphanAt = Instant.parse("2026-01-15T10:07:00Z")
-        historyRepository.save(
-            OrderHistory(orderId, customerId, BigDecimal("99.00"), OrderStatus.COMPLETED, createdAt, orphanAt, processingVersion),
+        postgresHistoryRepository.save(
+            OrderHistory(orderId, customerId, BigDecimal("99.00"), OrderStatus.COMPLETED, createdAt, orphanAt),
         )
+        awaitLatestState { assertThat(it.orderStatus).isEqualTo(OrderStatus.COMPLETED) }
 
         val repair =
             OrderRepairEvent(
@@ -133,23 +130,19 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
             )
         publish(repair)
 
-        val repaired = awaitRepair(previousVersion = processingVersion!!)
+        val repaired = awaitRepair { assertThat(it.totalAmount).isEqualByComparingTo("9.90") }
         assertThat(repaired.orderStatus).isEqualTo(OrderStatus.PROCESSING)
-        assertThat(repaired.totalAmount).isEqualByComparingTo("9.90")
         assertThat(repaired.updatedAt).isEqualTo(processingAt)
 
-        // Both repaired rows share one version, so updated_at decides which one each snapshot returns
+        // The orphan is deleted, so the snapshot at its time returns the repaired PROCESSING state
         assertThat(findSnapshot(beforeProcessing).orderStatus).isEqualTo(OrderStatus.CREATED)
         assertThat(findSnapshot(orphanAt).orderStatus).isEqualTo(OrderStatus.PROCESSING)
 
         // A second repair replaces the first one and leaves the same timeline
         publish(repair)
-        val repairedAgain = awaitRepair(previousVersion = repaired.version!!)
-        assertThat(repairedAgain.orderStatus).isEqualTo(OrderStatus.PROCESSING)
+        val repairedAgain = awaitRepair { assertThat(it.orderStatus).isEqualTo(OrderStatus.PROCESSING) }
+        assertThat(repairedAgain.updatedAt).isEqualTo(processingAt)
         assertThat(findSnapshot(beforeProcessing).orderStatus).isEqualTo(OrderStatus.CREATED)
-
-        historyRepository.optimizeFinal()
-        assertThat(historyRepository.countRows(orderId)).isEqualTo(2)
     }
 
     @Test
@@ -209,7 +202,7 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
 
     private fun awaitLatestState(assertion: (OrderHistory) -> Unit): OrderHistory {
         lateinit var latest: OrderHistory
-        await.atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(250)).untilAsserted {
+        await.atMost(SYNC_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted {
             val records = historyRepository.findByOrderId(orderId)
             assertThat(records).hasSize(1)
             latest = records.first()
@@ -218,17 +211,22 @@ class OrderEventConsumerIT : IntegrationTestContainers() {
         return latest
     }
 
-    // Waits until the repair rows are stored and every older version (orphans included) is deleted
-    private fun awaitRepair(previousVersion: Long): OrderHistory {
+    // Waits until the repaired timeline is replicated: exactly the two repaired states, every older row deleted
+    private fun awaitRepair(assertion: (OrderHistory) -> Unit): OrderHistory {
         lateinit var latest: OrderHistory
-        await.atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(250)).untilAsserted {
-            latest = historyRepository.findByOrderId(orderId).single()
-            assertThat(latest.version).isGreaterThan(previousVersion)
+        await.atMost(SYNC_TIMEOUT).pollInterval(POLL_INTERVAL).untilAsserted {
             assertThat(historyRepository.countRows(orderId)).isEqualTo(2)
+            latest = historyRepository.findByOrderId(orderId).single()
+            assertion(latest)
         }
         return latest
     }
 
     private fun findSnapshot(targetTime: Instant): OrderHistory =
         historyRepository.findBy(GetOrderHistoryQuery(targetTime = targetTime, orderId = orderId)).single()
+
+    private companion object {
+        val SYNC_TIMEOUT: Duration = Duration.ofSeconds(30)
+        val POLL_INTERVAL: Duration = Duration.ofMillis(250)
+    }
 }

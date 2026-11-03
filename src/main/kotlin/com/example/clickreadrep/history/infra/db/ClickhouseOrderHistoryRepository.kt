@@ -20,19 +20,16 @@ open class ClickhouseOrderHistoryRepository(
     protected val log = KotlinLogging.logger {}
 
     /**
-     * Reconstructs the state of every order exactly as it was at [targetTime] (time travel).
+     * Returns every order as it was at [GetOrderHistoryQuery.targetTime] (time travel).
      *
-     * **How the latest version is calculated:** each status change is appended as a new row, so one order owns
-     * several rows that differ only by `version` (the Kafka offset of the event). Instead of the expensive `FINAL`
-     * modifier, the rows are collapsed in memory with `GROUP BY order_id`: `argMax(column, (version, updated_at))`
-     * returns the value of the row with the highest version, i.e. the most recent state. A history repair stores
-     * the whole timeline with one shared version, so `updated_at` breaks the tie and the latest repaired step wins.
-     * `created_at` is the same on every row of an order, so `any(created_at)` is enough.
+     * - **`FINAL`**: the table receives every PostgreSQL change as a new row. `FINAL` keeps only the latest change per
+     *   row `id` (highest `lsn`) and drops deleted rows, which background merges would otherwise do at an unknown time.
+     * - **`argMax(..., updated_at)`**: an order still has one row per state, so `GROUP BY order_id` keeps the most
+     *   recent state up to the target time. `version` cannot order states, because it only counts the updates of
+     *   a single row.
      *
-     * **How the search is restricted to partitions:** the table is partitioned by `toYYYYMM(created_at)`. An order
-     * created after [targetTime] cannot be part of the snapshot, so the `created_at <= ?` filter lets ClickHouse
-     * skip all monthly partitions newer than [targetTime] without reading them. Inside the remaining partitions,
-     * `updated_at <= ?` drops the versions that happened after [targetTime] before the aggregation runs.
+     * All filters use sorting or partition key columns, so ClickHouse applies them before `FINAL` and skips the
+     * monthly partitions newer than the target time.
      */
     override fun findBy(query: GetOrderHistoryQuery): List<OrderHistory> {
         val customerFilter = if (query.customerId != null) "AND customer_id = ?" else ""
@@ -42,13 +39,13 @@ open class ClickhouseOrderHistoryRepository(
             """
             SELECT
                 order_id,
-                argMax(customer_id, (version, updated_at)) AS latest_customer_id,
-                argMax(total_amount, (version, updated_at)) AS latest_total_amount,
-                argMax(status, (version, updated_at)) AS latest_status,
+                argMax(customer_id, updated_at) AS latest_customer_id,
+                argMax(total_amount, updated_at) AS latest_total_amount,
+                argMax(status, updated_at) AS latest_status,
                 any(created_at) AS latest_created_at,
-                argMax(updated_at, (version, updated_at)) AS latest_updated_at,
-                max(version) AS latest_version
-            FROM order_history
+                max(updated_at) AS latest_updated_at,
+                argMax(version, updated_at) AS latest_version
+            FROM order_history FINAL
             WHERE created_at <= ? AND updated_at <= ?
                 $customerFilter
                 $orderFilter
