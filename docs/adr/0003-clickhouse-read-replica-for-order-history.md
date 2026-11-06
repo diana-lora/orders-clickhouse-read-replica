@@ -89,36 +89,38 @@ Debezium reads the PostgreSQL write-ahead log through logical replication (`wal_
 and publishes every row change to Kafka.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph pg["PostgreSQL"]
+        direction LR
         tx["Transaction<br/>INSERT / UPDATE / DELETE<br/>on order_history"]
         tbl[("order_history table")]
         wal["WAL<br/>wal_level=logical<br/>each entry has an LSN"]
-        pgout["pgoutput<br/>plugin.name=pgoutput"]
+        pgout["pgoutput<br/>plugin.name=pgoutput<br/>decodes the WAL into row changes"]
         pub["Publication<br/>order_history_publication<br/>only table order_history"]
         slot["Replication slot<br/>order_history_slot<br/>stores the confirmed LSN"]
+        tx -->|"writes rows"| tbl
+        tx -->|"commit"| wal
+        wal -->|"decoded into row changes"| pgout
+        pgout -->|"filtered by"| pub
+        pub --> slot
     end
 
     subgraph connect["Kafka Connect worker (debezium container)"]
+        direction LR
         task["Debezium connector task<br/>postgres-order-history-connector<br/>snapshot.mode=initial"]
         smt["SMT ExtractNewRecordState<br/>flat row + __deleted + __lsn<br/>tombstones dropped"]
         conv["JsonConverter<br/>schemas.enable=false"]
+        task -->|"change event envelope<br/>before / after / source / op"| smt
+        smt --> conv
     end
 
     subgraph kafka["Kafka"]
         topic[["order_history_cdc.public.order_history<br/>key = id"]]
     end
 
-    tx -->|"writes rows"| tbl
-    tx -->|"commit"| wal
-    wal -->|"decoded into row changes"| pgout
-    pgout -->|"filtered by"| pub
-    pub --> slot
-    slot -->|"stream of row changes"| task
-    tbl ==>|"initial snapshot<br/>(first start only)"| task
-    task -->|"change event envelope<br/>before / after / source / op"| smt
-    smt --> conv
-    conv -->|"one message per changed row"| topic
+    pg -->|"stream of row changes (from slot)"| connect
+    pg ==>|"initial snapshot of the table<br/>(first start only)"| connect
+    connect -->|"one message per changed row"| kafka
 ```
 
 The diagram shows how one committed change in PostgreSQL becomes one Kafka message:
@@ -133,8 +135,8 @@ The diagram shows how one committed change in PostgreSQL becomes one Kafka messa
 3. **Kafka stores the result.** Each changed row becomes one message on `order_history_cdc.public.order_history`,
    with the row `id` as key.
 
-The thick arrow is the initial snapshot: on the first start only, Debezium copies the existing rows before streaming
-the changes.
+The thick arrow is the initial snapshot: on the first start only, Debezium copies the existing rows of
+`order_history` before streaming the changes from the replication slot.
 
 | Setting                                                                                                              | Effect                                                                                                                                                                                                                       |
 |:---------------------------------------------------------------------------------------------------------------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
